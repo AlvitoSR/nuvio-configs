@@ -1,373 +1,437 @@
-/**
- * AnimeFire - Nuvio Provider
- * Site: https://animefire.io
- * Linguagem: pt-BR | Tipo: Anime / Filmes
- *
- * CONFIGURAÇÃO:
- *   Substitua TMDB_API_KEY pela sua chave gratuita em https://www.themoviedb.org/settings/api
- */
+const TMDB_API_KEY = 'b64d2f3a4212a99d64a7d4485faed7b3';
+const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
+const BASE_URL = 'https://animefire.io';
 
-var TMDB_API_KEY = "c6c6f4c1cb446e0d5c305f3fa7eeb4a9"; // <- Substitua aqui
-var BASE_URL = "https://animefire.io";
-
-var ITAG_QUALITY = {
-  18: "360p",
-  22: "720p",
-  37: "1080p",
-  59: "480p",
-  43: "360p",
-  44: "480p",
-  45: "720p",
-  46: "1080p"
+const HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Referer': BASE_URL,
+    'Accept-Language': 'pt-BR,pt;q=0.9'
 };
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+// ─── Lista de proxies CORS em cascata ────────────────────────────────────────
 
-function decodeUrl(url) {
-  return url
-    .replace(/\\u([0-9a-fA-F]{4})/g, function(_, hex) {
-      return String.fromCharCode(parseInt(hex, 16));
-    })
-    .replace(/\\\//g, "/")
-    .replace(/\\&/g, "&")
-    .replace(/\\=/g, "=")
-    .replace(/\\\\/g, "\\")
-    .replace(/^"|"$/g, "")
-    .trim();
+const CORS_PROXIES = [
+    {
+        name: 'allorigins',
+        build: (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+        parse: async (resp) => {
+            const json = await resp.json();
+            if (!json.contents) throw new Error('No contents');
+            return {
+                ok: resp.ok,
+                status: 200,
+                text: () => Promise.resolve(json.contents),
+                json: () => Promise.resolve(JSON.parse(json.contents))
+            };
+        }
+    },
+    {
+        name: 'corsproxy',
+        build: (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+        parse: (resp) => resp
+    },
+    {
+        name: 'codetabs',
+        build: (url) => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}`,
+        parse: (resp) => resp
+    }
+];
+
+/**
+ * Wrapper async para fetch com proxy cascade.
+ * Se a URL for do domínio BASE_URL, tenta cada proxy em sequencia.
+ * Caso contrario vai direto ao fetch original.
+ */
+async function proxyFetch(url, options = {}) {
+    if (!url.includes('animefire.io') && !url.includes('animefire')) {
+        return fetch(url, options);
+    }
+
+    for (const proxy of CORS_PROXIES) {
+        try {
+            const proxyUrl = proxy.build(url);
+            const resp = await fetch(proxyUrl, options);
+
+            // Allorigins retorna 200 mesmo se alvo deu 403 → checar conteudo
+            if (proxy.name === 'allorigins') {
+                const text = await resp.text();
+                if (text && text.length > 20 && !text.includes('<!DOCTYPE html>')) {
+                    return {
+                        ok: true, status: 200,
+                        text: () => Promise.resolve(text),
+                        json: () => Promise.resolve(JSON.parse(text))
+                    };
+                }
+                // Se veio pagina Cloudflare ou HTML generico, tenta proximo proxy
+                if (text.length < 1000 || text.includes('cf-') || text.includes('cloudflare')) {
+                    continue;
+                }
+                return {
+                    ok: true, status: 200,
+                    text: () => Promise.resolve(text),
+                    json: () => Promise.resolve(JSON.parse(text))
+                };
+            }
+
+            if (!resp.ok) continue;
+            return proxy.parse(resp);
+        } catch {
+            continue;
+        }
+    }
+
+    // Fallback: tenta direto por via das duvidas
+    return fetch(url, options);
 }
 
-function extractItagFromUrl(url) {
-  var m = url.match(/itag[=?&](\d+)/) || url.match(/itag%3D(\d+)/);
-  return m ? parseInt(m[1]) : 18;
-}
+// Mesmo mapa de qualidade do extrator Kotlin original
+const ITAG_QUALITY = {
+    18: '360p',
+    22: '720p',
+    37: '1080p',
+    59: '480p',
+    43: '360p',
+    44: '480p',
+    45: '720p',
+    46: '1080p'
+};
 
-function qualityFromLabel(label) {
-  if (label.indexOf("1080") !== -1) return "1080p";
-  if (label.indexOf("720") !== -1)  return "720p";
-  if (label.indexOf("480") !== -1)  return "480p";
-  if (label.indexOf("360") !== -1)  return "360p";
-  if (label.indexOf("240") !== -1)  return "240p";
-  return "480p";
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function titleToSlug(title) {
+    if (!title) return '';
+    return title.toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '');
 }
 
 function generateCpn() {
-  var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  var result = "";
-  for (var i = 0; i < 16; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    return Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
 }
 
-// ─── 1. TMDB: pegar título do anime ─────────────────────────────────────────
+function decodeUrl(url) {
+    return url
+        .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+        .replace(/\\\//g, '/')
+        .replace(/\\&/g, '&')
+        .replace(/\\=/g, '=')
+        .replace(/\\\\/g, '\\')
+        .replace(/^"|"$/g, '')
+        .trim();
+}
 
-function getTitleFromTMDB(tmdbId, mediaType) {
-  var type = mediaType === "movie" ? "movie" : "tv";
-  var url = "https://api.themoviedb.org/3/" + type + "/" + tmdbId +
-            "?api_key=" + TMDB_API_KEY + "&language=pt-BR";
+function qualityFromLabel(label) {
+    if (label.includes('1080')) return '1080p';
+    if (label.includes('720'))  return '720p';
+    if (label.includes('480'))  return '480p';
+    if (label.includes('360'))  return '360p';
+    return '480p';
+}
 
-  return fetch(url)
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      return data.title || data.name || null;
+// ─── AniList: buscar titulo do anime (igual ao mywallpaper.js) ───────────────
+
+async function getAniListTitles(tmdbId, mediaType) {
+    const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
+    const tmdbUrl = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}&language=en-US`;
+
+    const tmdbResponse = await fetch(tmdbUrl);
+    if (!tmdbResponse.ok) return [];
+    const tmdbData = await tmdbResponse.json();
+    const searchTitle = mediaType === 'tv' ? tmdbData.name : tmdbData.title;
+
+    const query = `
+        query ($search: String) {
+            Media(search: $search, type: ANIME) {
+                title { romaji english }
+                synonyms
+            }
+        }`;
+
+    const anilistResponse = await fetch('https://graphql.anilist.co', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, variables: { search: searchTitle } })
     });
+
+    if (!anilistResponse.ok) return [{ name: searchTitle, type: 'tmdb' }];
+    const anilistData = await anilistResponse.json();
+    const media = anilistData?.data?.Media;
+
+    const titles = [];
+    if (media?.title?.romaji) titles.push({ name: media.title.romaji, type: 'romaji' });
+    if (media?.title?.english && media.title.english !== media.title.romaji) {
+        titles.push({ name: media.title.english, type: 'english' });
+    }
+    // Fallback para titulo TMDB se AniList nao retornar nada
+    if (titles.length === 0) titles.push({ name: searchTitle, type: 'tmdb' });
+
+    return titles;
 }
 
-// ─── 2. Buscar anime no AnimeFire ───────────────────────────────────────────
+// ─── AnimeFire: buscar anime pelo titulo ─────────────────────────────────────
 
-function searchAnimeFire(title) {
-  var query = title
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9\s]/g, "")
-    .trim()
-    .replace(/\s+/g, "-");
+async function searchAnimeFire(title) {
+    const slug = titleToSlug(title);
+    const url = `${BASE_URL}/pesquisar/${slug}`;
 
-  var url = BASE_URL + "/pesquisar/" + query;
+    try {
+        const response = await proxyFetch(url, { headers: HEADERS });
+        if (!response.ok) return [];
+        const html = await response.text();
 
-  return fetch(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      "Referer": BASE_URL,
-      "Accept-Language": "pt-BR,pt;q=0.9"
-    }
-  })
-  .then(function(r) { return r.text(); })
-  .then(function(html) {
-    var links = [];
-    var regex = /href="(https?:\/\/animefire\.io\/(?:animes|filmes)\/[^"]+)"/g;
-    var m;
-    while ((m = regex.exec(html)) !== null) {
-      var link = m[1].split("?")[0];
-      if (links.indexOf(link) === -1) links.push(link);
-    }
-    return links;
-  });
-}
-
-// ─── 3. Pegar URL do episódio na página do anime ────────────────────────────
-
-function getEpisodeUrl(animePageUrl, targetEpisode) {
-  return fetch(animePageUrl, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      "Referer": BASE_URL
-    }
-  })
-  .then(function(r) { return r.text(); })
-  .then(function(html) {
-    // Coleta todos os links de episódio
-    var regex = /href="(https?:\/\/animefire\.io\/(?:animes|filmes)\/[^"]+\/(\d+)[^"]*)"/g;
-    var episodes = [];
-    var m;
-    while ((m = regex.exec(html)) !== null) {
-      episodes.push({ url: m[1], num: parseInt(m[2]) });
-    }
-
-    if (episodes.length === 0) return null;
-
-    // Procura o episódio alvo
-    var found = null;
-    for (var i = 0; i < episodes.length; i++) {
-      if (episodes[i].num === targetEpisode) {
-        found = episodes[i].url;
-        break;
-      }
-    }
-
-    // Fallback: primeiro episódio se for filme (ep 1)
-    if (!found && episodes.length > 0) {
-      found = episodes[0].url;
-    }
-
-    return found;
-  });
-}
-
-// ─── 4a. Extrator Lightspeed (API JSON) ─────────────────────────────────────
-
-function extractLightspeedStreams(episodeUrl) {
-  var parts = episodeUrl
-    .replace("https://animefire.io/animes/", "")
-    .replace("https://animefire.io/filmes/", "")
-    .split("/");
-
-  if (parts.length < 2) return Promise.resolve([]);
-
-  var slug = parts[0];
-  var epNum = parts[1].replace(/[^0-9]/g, "") || "1";
-  var timestamp = Math.floor(Date.now() / 1000);
-  var xhrUrl = BASE_URL + "/video/" + slug + "/" + epNum + "?tempsubs=0&" + timestamp;
-
-  return fetch(xhrUrl, {
-    headers: {
-      "Referer": episodeUrl,
-      "X-Requested-With": "XMLHttpRequest",
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(json) {
-    var streams = [];
-    var data = json.data || [];
-
-    data.forEach(function(item) {
-      if (!item.src) return;
-      var quality = qualityFromLabel(item.label || "");
-
-      streams.push({
-        name: "AnimeFire",
-        title: quality + " • AnimeFire [Lightspeed]",
-        url: item.src,
-        quality: quality,
-        headers: {
-          "Referer": episodeUrl,
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        const links = [];
+        const regex = /href="(https?:\/\/animefire\.io\/(?:animes|filmes)\/[^"?#]+)"/g;
+        let m;
+        while ((m = regex.exec(html)) !== null) {
+            // So pega a pagina principal do anime (exatamente 2 segmentos de path)
+            const link = m[1].replace(/\/$/, '');
+            const parts = link.replace(BASE_URL, '').split('/').filter(Boolean);
+            if (parts.length === 2 && !links.includes(link)) {
+                links.push(link);
+            }
         }
-      });
-    });
-
-    return streams;
-  })
-  .catch(function() { return []; });
+        return links;
+    } catch {
+        return [];
+    }
 }
 
-// ─── 4b. Extrator Blogger ────────────────────────────────────────────────────
+// ─── AnimeFire: pegar URL do episodio na pagina do anime ─────────────────────
+
+async function getEpisodeUrl(animePageUrl, targetEpisode) {
+    try {
+        const response = await proxyFetch(animePageUrl, { headers: HEADERS });
+        if (!response.ok) return null;
+        const html = await response.text();
+
+        const episodes = [];
+        const regex = /href="(https?:\/\/animefire\.io\/(?:animes|filmes)\/[^"]+?\/(\d+)\/?)"[^>]*>/g;
+        let m;
+        while ((m = regex.exec(html)) !== null) {
+            episodes.push({ url: m[1], num: parseInt(m[2]) });
+        }
+
+        if (episodes.length === 0) return null;
+
+        const found = episodes.find(e => e.num === targetEpisode);
+        return found ? found.url : episodes[0].url;
+    } catch {
+        return null;
+    }
+}
+
+// ─── Extrator Lightspeed (API JSON do AnimeFire) ─────────────────────────────
+
+async function extractLightspeedStreams(episodeUrl) {
+    try {
+        const path = episodeUrl
+            .replace(`${BASE_URL}/animes/`, '')
+            .replace(`${BASE_URL}/filmes/`, '');
+
+        const parts = path.split('/');
+        if (parts.length < 2) return [];
+
+        const slug  = parts[0];
+        const epNum = parts[1].replace(/\D/g, '') || '1';
+        const timestamp = Math.floor(Date.now() / 1000);
+        const xhrUrl = `${BASE_URL}/video/${slug}/${epNum}?tempsubs=0&${timestamp}`;
+
+        const response = await proxyFetch(xhrUrl, {
+            headers: { ...HEADERS, 'X-Requested-With': 'XMLHttpRequest' }
+        });
+
+        if (!response.ok) return [];
+        const json = await response.json();
+        const data = json.data || [];
+
+        return data
+            .filter(item => item.src)
+            .map(item => {
+                const qualLabel = qualityFromLabel(item.label || '');
+                return {
+                    url: item.src,
+                    name: 'AnimeFire',
+                    title: `${qualLabel} • Legendado`,
+                    quality: parseInt((item.label || '480').match(/\d+/)?.[0] || '480'),
+                    type: 'hls',
+                    headers: { 'Referer': episodeUrl, ...HEADERS }
+                };
+            });
+    } catch {
+        return [];
+    }
+}
+
+// ─── Extrator Blogger ─────────────────────────────────────────────────────────
 
 function extractBloggerToken(html) {
-  var m = html.match(/blogger\.com\/video\.g[^"']*token=([a-zA-Z0-9_\-]+)/);
-  return m ? m[1] : null;
+    const m = html.match(/blogger\.com\/video\.g[^"']*token=([a-zA-Z0-9_\-]+)/);
+    return m ? m[1] : null;
 }
 
 function extractWizData(html) {
-  var wizData = {};
-  var m = html.match(/window\.WIZ_global_data\s*=\s*\{([^}]+)\}/);
-  if (!m) return wizData;
-  var s = m[1];
+    const wizData = {};
+    const m = html.match(/window\.WIZ_global_data\s*=\s*\{([^}]+)\}/);
+    if (!m) return wizData;
+    const s = m[1];
 
-  ["FdrFJe", "cfb2h", "UUFaWc", "hsFLT"].forEach(function(key) {
-    var km = s.match(new RegExp('"' + key + '"\\s*:\\s*"([^"]+)"'));
-    if (km) wizData[key] = km[1];
-  });
-
-  return wizData;
+    for (const key of ['FdrFJe', 'cfb2h', 'UUFaWc', 'hsFLT']) {
+        const km = s.match(new RegExp(`"${key}"\\s*:\\s*"([^"]+)"`));
+        if (km) wizData[key] = km[1];
+    }
+    return wizData;
 }
 
-function callBloggerBatch(token, wizData) {
-  var fSid   = wizData["FdrFJe"] || "-7535563745894756252";
-  var bl     = wizData["cfb2h"]  || "boq_bloggeruiserver_20260223.02_p0";
-  var reqid  = Math.floor(Math.random() * 90000) + 10000;
+async function callBloggerBatch(token, wizData) {
+    const fSid  = wizData['FdrFJe'] || '-7535563745894756252';
+    const bl    = wizData['cfb2h']  || 'boq_bloggeruiserver_20260223.02_p0';
+    const reqid = Math.floor(Math.random() * 90000) + 10000;
 
-  var apiUrl = "https://www.blogger.com/_/BloggerVideoPlayerUi/data/batchexecute" +
-    "?rpcids=WcwnYd&source-path=%2Fvideo.g" +
-    "&f.sid=" + encodeURIComponent(fSid) +
-    "&bl=" + encodeURIComponent(bl) +
-    "&hl=pt-BR&_reqid=" + reqid + "&rt=c";
+    const apiUrl = `https://www.blogger.com/_/BloggerVideoPlayerUi/data/batchexecute` +
+        `?rpcids=WcwnYd&source-path=%2Fvideo.g` +
+        `&f.sid=${encodeURIComponent(fSid)}` +
+        `&bl=${encodeURIComponent(bl)}` +
+        `&hl=pt-BR&_reqid=${reqid}&rt=c`;
 
-  var body = "f.req=" + encodeURIComponent(
-    '[[[\"WcwnYd\",\"[\\"' + token + '\\",\\"\\",0]\",null,\"generic\"]]]'
-  );
+    const body = `f.req=${encodeURIComponent(`[[["WcwnYd","[\\"${token}\\",\\"\\",0]",null,"generic"]]]`)}`;
 
-  return fetch(apiUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-      "Origin": "https://www.blogger.com",
-      "Referer": "https://www.blogger.com/",
-      "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36",
-      "x-same-domain": "1"
-    },
-    body: body
-  })
-  .then(function(r) { return r.text(); })
-  .then(function(text) {
-    var streams = [];
-
-    // Limpa prefixo do Google
-    var clean = text.replace(/^\)\]}'[\s\n]*/, "");
-
-    // Extrai JSON interno
-    var inner = "";
-    var pm = clean.match(/"wrb\.fr"\s*,\s*"[^"]*"\s*,\s*"([\s\S]+?)"\s*\]/);
-    if (pm) {
-      inner = pm[1]
-        .replace(/\\"/g, '"')
-        .replace(/\\\\/g, "\\");
-    } else {
-      inner = clean;
-    }
-
-    // Extrai URLs do googlevideo
-    var urlRegex = /"((?:https?:\\?\/\\?\/)?[^"]+?googlevideo[^"]+?)"\s*,\s*\[(\d+)\]/g;
-    var um;
-    var seen = [];
-
-    while ((um = urlRegex.exec(inner)) !== null) {
-      var rawUrl = decodeUrl(um[1]);
-      var itag   = parseInt(um[2]);
-      var quality = ITAG_QUALITY[itag] || "360p";
-      var cpn    = generateCpn();
-
-      var sep = rawUrl.indexOf("?") !== -1 ? "&" : "?";
-      var finalUrl = rawUrl + sep + "cpn=" + cpn + "&c=WEB_EMBEDDED_PLAYER&cver=1.20260224.08.00";
-
-      if (seen.indexOf(itag) === -1) {
-        seen.push(itag);
-        streams.push({
-          name: "AnimeFire",
-          title: quality + " • AnimeFire [Blogger]",
-          url: finalUrl,
-          quality: quality,
-          headers: {
-            "Referer": "https://youtube.googleapis.com/",
-            "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36",
-            "Range": "bytes=0-"
-          }
+    try {
+        const response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                'Origin': 'https://www.blogger.com',
+                'Referer': 'https://www.blogger.com/',
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36',
+                'x-same-domain': '1'
+            },
+            body
         });
-      }
-    }
 
-    return streams;
-  })
-  .catch(function() { return []; });
+        const text = await response.text();
+        const streams = [];
+        const clean = text.replace(/^\)\]}'[\s\n]*/, '');
+
+        let inner = clean;
+        const pm = clean.match(/"wrb\.fr"\s*,\s*"[^"]*"\s*,\s*"([\s\S]+?)"\s*\]/);
+        if (pm) {
+            inner = pm[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+        }
+
+        const urlRegex = /"((?:https?:\\?\/\\?\/)?[^"]+?googlevideo[^"]+?)"\s*,\s*\[(\d+)\]/g;
+        const seen = new Set();
+        let um;
+
+        while ((um = urlRegex.exec(inner)) !== null) {
+            const rawUrl = decodeUrl(um[1]);
+            const itag   = parseInt(um[2]);
+            const qualityLabel = ITAG_QUALITY[itag] || '360p';
+
+            if (!seen.has(itag)) {
+                seen.add(itag);
+                const cpn = generateCpn();
+                const sep = rawUrl.includes('?') ? '&' : '?';
+                const finalUrl = `${rawUrl}${sep}cpn=${cpn}&c=WEB_EMBEDDED_PLAYER&cver=1.20260224.08.00`;
+
+                streams.push({
+                    url: finalUrl,
+                    name: 'AnimeFire',
+                    title: `${qualityLabel} • Legendado`,
+                    quality: parseInt(qualityLabel),
+                    type: 'mp4',
+                    headers: {
+                        'Referer': 'https://youtube.googleapis.com/',
+                        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36',
+                        'Range': 'bytes=0-'
+                    }
+                });
+            }
+        }
+
+        return streams;
+    } catch {
+        return [];
+    }
 }
 
-function extractBloggerStreams(episodePageHtml, episodeUrl) {
-  var token = extractBloggerToken(episodePageHtml);
-  if (!token) return Promise.resolve([]);
+async function extractBloggerStreams(episodePageHtml, episodeUrl) {
+    const token = extractBloggerToken(episodePageHtml);
+    if (!token) return [];
 
-  return fetch("https://www.blogger.com/video.g?token=" + token, {
-    headers: {
-      "Referer": episodeUrl,
-      "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36",
-      "sec-ch-ua-mobile": "?1"
+    try {
+        const bloggerResponse = await fetch(`https://www.blogger.com/video.g?token=${token}`, {
+            headers: {
+                'Referer': episodeUrl,
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36',
+                'sec-ch-ua-mobile': '?1'
+            }
+        });
+
+        if (!bloggerResponse.ok) return [];
+        const bloggerHtml = await bloggerResponse.text();
+        const wizData = extractWizData(bloggerHtml);
+        return await callBloggerBatch(token, wizData);
+    } catch {
+        return [];
     }
-  })
-  .then(function(r) { return r.text(); })
-  .then(function(bloggerHtml) {
-    var wizData = extractWizData(bloggerHtml);
-    return callBloggerBatch(token, wizData);
-  })
-  .catch(function() { return []; });
 }
 
-// ─── 5. Extrai streams do episódio (decide Lightspeed vs Blogger) ────────────
+// ─── Extrai streams de um episodio (decide Lightspeed vs Blogger) ─────────────
 
-function extractStreamsFromEpisode(episodeUrl) {
-  return fetch(episodeUrl, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      "Referer": BASE_URL
-    }
-  })
-  .then(function(r) { return r.text(); })
-  .then(function(html) {
-    var hasBlogger = html.indexOf("blogger.com/video.g") !== -1;
+async function extractStreamsFromEpisode(episodeUrl) {
+    try {
+        const response = await proxyFetch(episodeUrl, { headers: HEADERS });
+        if (!response.ok) return [];
+        const html = await response.text();
 
-    if (hasBlogger) {
-      return extractBloggerStreams(html, episodeUrl);
-    } else {
-      return extractLightspeedStreams(episodeUrl);
+        const hasBlogger = html.includes('blogger.com/video.g');
+        return hasBlogger
+            ? await extractBloggerStreams(html, episodeUrl)
+            : await extractLightspeedStreams(episodeUrl);
+    } catch {
+        return [];
     }
-  })
-  .catch(function() { return []; });
 }
 
-// ─── 6. Ponto de entrada principal ──────────────────────────────────────────
+// ─── getStreams: ponto de entrada principal ───────────────────────────────────
 
-function getStreams(tmdbId, mediaType, season, episode) {
-  var targetEpisode = episode || 1;
+async function getStreams(tmdbId, mediaType, season, episode) {
+    const targetSeason  = mediaType === 'movie' ? 1 : season;
+    const targetEpisode = mediaType === 'movie' ? 1 : episode;
 
-  return getTitleFromTMDB(tmdbId, mediaType)
-    .then(function(title) {
-      if (!title) return [];
-      console.log("[AnimeFire] Buscando: " + title);
-      return searchAnimeFire(title);
-    })
-    .then(function(links) {
-      if (!links || links.length === 0) return [];
+    try {
+        const titles = await getAniListTitles(tmdbId, mediaType);
+        if (!titles.length) return [];
 
-      var animeUrl = links[0]; // Primeiro resultado da busca
-      console.log("[AnimeFire] Página do anime: " + animeUrl);
+        for (const titleInfo of titles) {
+            const animeLinks = await searchAnimeFire(titleInfo.name);
+            if (!animeLinks.length) continue;
 
-      // Filmes: vai direto para a URL (episódio único)
-      if (mediaType === "movie") {
-        return extractStreamsFromEpisode(animeUrl + "/1")
-          .catch(function() { return extractStreamsFromEpisode(animeUrl); });
-      }
+            const animePageUrl = animeLinks[0];
 
-      return getEpisodeUrl(animeUrl, targetEpisode);
-    })
-    .then(function(episodeUrl) {
-      if (!episodeUrl || typeof episodeUrl !== "string") return [];
-      console.log("[AnimeFire] Episódio: " + episodeUrl);
-      return extractStreamsFromEpisode(episodeUrl);
-    })
-    .catch(function(err) {
-      console.error("[AnimeFire] Erro:", err.message || err);
-      return [];
-    });
+            if (mediaType === 'movie') {
+                let streams = await extractStreamsFromEpisode(`${animePageUrl}/1`);
+                if (!streams.length) streams = await extractStreamsFromEpisode(animePageUrl);
+                if (streams.length) return streams.sort((a, b) => b.quality - a.quality);
+                continue;
+            }
+
+            const episodeUrl = await getEpisodeUrl(animePageUrl, targetEpisode);
+            if (!episodeUrl) continue;
+
+            const streams = await extractStreamsFromEpisode(episodeUrl);
+            if (streams.length) return streams.sort((a, b) => b.quality - a.quality);
+        }
+
+        return [];
+    } catch {
+        return [];
+    }
 }
 
-module.exports = { getStreams };
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { getStreams };
+} else {
+    global.getStreams = getStreams;

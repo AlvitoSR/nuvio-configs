@@ -1,9 +1,93 @@
 {
-  "name": "Meus Plugins",
-  "plugins": [
+  "name": "Liet Nuvio",
+  "version": "1.0.0",
+  "scrapers": [
     {
+      "id": "mywallpaper",
+      "name": "My Wallpaper",
+      "description": "CDN brasileiro de animes",
+      "version": "1.0.0",
+      "author": "lawlietbr",
+      "supportedTypes": [
+        "tv"
+      ],
+      "filename": "providers/mywallpaper.js",
+      "enabled": true,
+      "logo": "https://image2url.com/r2/default/images/1773218651086-4a0ea24e-6e2b-4a22-ab18-8cb28d1b6f23.png",
+      "contentLanguage": [
+        "pt-br"
+      ],
+      "formats": [
+        "hls",
+        "m3u8"
+      ],
+      "limited": false,
+      "disabledPlatforms": [],
+      "supportsExternalPlayer": true,
+      "tags": [
+        "anime"
+      ]
+    },
+    {
+      "id": "doramogo",
+      "name": "Doramogo",
+      "description": "Doramogo - Doramas Coreanos Legendados e Dublados",
+      "version": "1.0.0",
+      "author": "lawlietbr",
+      "supportedTypes": [
+        "tv",
+        "movie"
+      ],
+      "filename": "providers/doramogo.js",
+      "enabled": true,
+      "logo": "https://www.doramogo.net/assets/doramogo/images/apple-touch-icon.webp?version=200.50.10",
+      "contentLanguage": [
+        "pt-br"
+      ],
+      "formats": [
+        "hls",
+        "m3u8"
+      ],
+      "limited": false,
+      "disabledPlatforms": [],
+      "supportsExternalPlayer": true,
+      "tags": [
+        "dorama",
+        "k-drama",
+        "coreano",
+        "asiatico",
+        "legendado",
+        "dublado"
+      ]
+    },
+    {
+      "id": "animefire",
       "name": "AnimeFire",
-      "url": "https://raw.githubusercontent.com/AlvitoSR/nuvio-configs/main/providers/animefire.js"
+      "description": "AnimeFire - Animes em português (legendado e dublado)",
+      "version": "1.0.0",
+      "author": "lawlietbr",
+      "supportedTypes": [
+        "tv",
+        "movie"
+      ],
+      "filename": "providers/animefire.js",
+      "enabled": true,
+      "logo": "https://animefire.io/img/icons/favicon-192x192.png",
+      "contentLanguage": [
+        "pt-br"
+      ],
+      "formats": [
+        "hls",
+        "mp4"
+      ],
+      "limited": false,
+      "disabledPlatforms": [],
+      "supportsExternalPlayer": true,
+      "tags": [
+        "anime",
+        "legendado",
+        "dublado"
+      ]
     }
   ]
 }
