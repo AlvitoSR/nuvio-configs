@@ -1,5 +1,3 @@
-// ✅ VERSÃO ORIGINAL PRESERVADA + CORREÇÕES (SEM QUEBRAR ESTRUTURA)
-
 const TMDB_API_KEY = 'c6c6f4c1cb446e0d5c305f3fa7eeb4a9';
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
 const BASE_URL = 'https://animefire.io';
@@ -17,22 +15,8 @@ const VIDEO_HEADERS = {
     'Referer': BASE_URL
 };
 
-// 🔥 NOVO: filtro de lixo (filmes/especiais)
-function isJunkSlug(slug) {
-    const s = slug.toLowerCase();
-    return (
-        s.includes('movie') ||
-        s.includes('filme') ||
-        s.includes('especial') ||
-        s.includes('ova') ||
-        s.includes('ona') ||
-        s.includes('recap') ||
-        s.includes('episode-of') ||
-        s.includes('special')
-    );
-}
+// ─── Buscar anime no AnimeFire (todos os resultados) ─────────────────────────
 
-// ─── Buscar anime ─────────────────────────
 async function searchAnimeFire(title) {
     const slug = titleToSlug(title);
     const url = `${BASE_URL}/pesquisar/${slug}`;
@@ -44,20 +28,19 @@ async function searchAnimeFire(title) {
 
         const items = [];
         const seen = new Set();
-        const regex = /<a(?=[^>]*\bhref="(https?:\/\/animefire\.io\/(?:animes|filmes)\/[^\"]+)")[^>]*>([\s\S]*?)<\/a>/g;
+        const regex = /<a(?=[^>]*\bhref="(https?:\/\/animefire\.io\/(?:animes|filmes)\/[^"]+)")[^>]*>([\s\S]*?)<\/a>/g;
         let m;
 
         while ((m = regex.exec(rawHtml)) !== null) {
             const fullUrl = m[1];
             const cardHtml = m[2];
 
+            // Extrair titulo do card
             const titleMatch = cardHtml.match(/animeTitle[^>]*>\s*([^<]+)</);
             if (!titleMatch) continue;
 
             const rawSlug = fullUrl.replace(BASE_URL + '/', '').split('/')[1] || '';
-
             if (!rawSlug.toLowerCase().includes('todos-os-episodios')) continue;
-            if (isJunkSlug(rawSlug)) continue; // 🔥 AQUI resolve filmes
             if (seen.has(fullUrl)) continue;
             seen.add(fullUrl);
 
@@ -65,44 +48,56 @@ async function searchAnimeFire(title) {
             const isDubbed = rawSlug.toLowerCase().includes('dublado');
             const rootSlug = rawSlug.replace(/-todos-os-episodios$/i, '');
 
+            // Determinar temporada pelo slug
             let season = detectSeason(rootSlug);
 
             items.push({ rootSlug, isDubbed, displayTitle, season });
         }
-
         return items;
     } catch {
         return [];
     }
 }
 
-// ─── Detectar temporada (mantido original) ───────────────────────
+// ─── Detectar tipo (serie, temporada, filme) pelo slug ───────────────────────
+
 function detectSeason(slug) {
     const s = slug.toLowerCase();
 
+    // Filmes primeiro
     if (s.includes('movie') || s.includes('filme') || s.includes('cinema')) {
         return 'movie';
     }
 
+    // Recompilação (shippuuden specials) — nao e temporada real
     if (s.includes('omakes') || s.includes('recap') || s.includes('special')) {
         return 'movie';
     }
 
+    // Padrões de temporada explícitos
+    // spy-x-family-season-3, one-punch-man-season-2
     let m = s.match(/[-]season[-](\d+)/);
     if (m) return parseInt(m[1]);
 
+    // one-punch-man-2nd-season, spy-x-family-3rd
     m = s.match(/(\d+)(?:st|nd|rd|th)[-\s]season|season[-](\d+)/);
     if (m) return parseInt(m[1] || m[2]);
 
+    // spy-x-family-part-2 → parte é continuidade da T1, nao T2
+    // Se tem "part" no slug, nao e temporada explicita → volta pra S1
     if (s.includes('part')) return 1;
 
+    // Anime-S2, one-piece-S2
     m = s.match(/-s(\d+)$/);
     if (m) return parseInt(m[1]);
 
+    // Numero solto no fim: one-punch-man-2, bleach-2
     m = s.match(/-(\d+)$/);
     if (m) {
         const n = parseInt(m[1]);
+        // So considera temporada se for 2-9 e nao estiver em contexto de "part-2", "code-white"
         if (n >= 2 && n <= 20) {
+            // Verifica se nao e palavra antes do numero
             const beforeNum = s.replace(/-\d+$/, '');
             if (!beforeNum.includes('part') && !beforeNum.includes('code') && !beforeNum.includes('white')) {
                 return n;
@@ -110,10 +105,12 @@ function detectSeason(slug) {
         }
     }
 
+    // Se nao tem indicador de temporada → S1
     return 1;
 }
 
-// ─── VIDEO (mantido) ────────────────────────────────────
+// ─── Chamar API /video/ (sem Cloudflare) ────────────────────────────────────
+
 async function extractVideoStreams(rootSlug, episodeNum, isDubbed) {
     if (!rootSlug || !episodeNum) return [];
 
@@ -151,7 +148,7 @@ async function extractVideoStreams(rootSlug, episodeNum, isDubbed) {
                     type: item.src.includes('.m3u8') ? 'hls' : 'mp4',
                     headers: {
                         'Referer': BASE_URL,
-                        'User-Agent': 'Mozilla/5.0'
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                     }
                 };
             });
@@ -160,18 +157,8 @@ async function extractVideoStreams(rootSlug, episodeNum, isDubbed) {
     }
 }
 
-// 🔥 NOVO: limitar streams (4 no máximo)
-function limitStreams(streams) {
-    const legendado = streams.filter(s => s.title === 'Legendado').sort((a,b)=>b.quality-a.quality);
-    const dublado = streams.filter(s => s.title === 'Dublado').sort((a,b)=>b.quality-a.quality);
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-    return [
-        ...legendado.slice(0,2),
-        ...dublado.slice(0,2)
-    ];
-}
-
-// ─── HELPERS (mantido) ─────────────────────────────────────────
 function titleToSlug(title) {
     if (!title) return '';
     return title.toLowerCase()
@@ -180,7 +167,55 @@ function titleToSlug(title) {
         .replace(/^-|-$/g, '');
 }
 
-// ─── getStreams (APENAS AJUSTES) ──────────────────────────────
+// ─── AniList → titulos alternativos ─────────────────────────────────────────
+
+async function getAniListTitles(tmdbId, mediaType) {
+    const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
+    const tmdbUrl = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}&language=en-US`;
+
+    const tmdbResp = await fetch(tmdbUrl);
+    if (!tmdbResp.ok) return [];
+    const tmdbData = await tmdbResp.json();
+    const searchTitle = mediaType === 'tv' ? tmdbData.name : tmdbData.title;
+
+    const query = `
+        query ($search: String) {
+            Media(search: $search, type: ANIME) {
+                title { romaji english }
+                synonyms
+            }
+        }`;
+
+    const anilistResp = await fetch('https://graphql.anilist.co', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, variables: { search: searchTitle } })
+    });
+
+    if (!anilistResp.ok) return [{ name: searchTitle, type: 'tmdb' }];
+    const anilistData = await anilistResp.json();
+    const media = anilistData?.data?.Media;
+
+    const titles = [];
+    if (media?.title?.romaji) titles.push({ name: media.title.romaji, type: 'romaji' });
+    if (media?.title?.english && media.title.english !== media.title.romaji) {
+        titles.push({ name: media.title.english, type: 'english' });
+    }
+    if (media?.synonyms) {
+        for (const syn of media.synonyms) {
+            if (syn.length < 4) continue; // Sinônimos curtos como "OPM" geram falsos positivos
+            if (/[\u3000-\u9fff\u0600-\u06ff\u0400-\u04ff\u0590-\u05ff\u0e00-\u0e7f]/.test(syn)) continue; // Ignorar JP/AR/RU/HE/TH
+            if (!titles.some(t => t.name.toLowerCase() === syn.toLowerCase())) {
+                titles.push({ name: syn, type: 'synonym' });
+            }
+        }
+    }
+    if (titles.length === 0) titles.push({ name: searchTitle, type: 'tmdb' });
+    return titles;
+}
+
+// ─── getStreams ──────────────────────────────────────────────────────────────
+
 async function getStreams(tmdbId, mediaType, season, episode) {
     const targetSeason = mediaType === 'movie' ? 1 : season;
     const targetEpisode = mediaType === 'movie' ? 1 : episode;
@@ -192,18 +227,23 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         const allStreams = [];
         const triedSlugs = new Set();
 
+        // 1) Buscar em todos os titulos e coletar TODOS os resultados
         for (const titleInfo of titles) {
             const animeLinks = await searchAnimeFire(titleInfo.name);
             if (!animeLinks.length) continue;
 
+            // 2) Validar que os resultados correspondem ao titulo buscado
+            // Se busca "One Punch Man", os resultados devem conter "one" + "punch" ou "punch" + "man" no slug
             const searchTitleForValidation = titleToSlug(titleInfo.name);
             const titleWords = searchTitleForValidation.split('-').filter(w => w.length > 2);
-
             const validLinks = animeLinks.filter(item => {
+                // Se tem mais de uma palavra com >2 chars, exigir pelo menos uma correspondencia
                 if (titleWords.length === 0) return true;
-                return titleWords.some(word => item.rootSlug.toLowerCase().includes(word));
+                const matchesAnyWord = titleWords.some(word => item.rootSlug.toLowerCase().includes(word));
+                return matchesAnyWord;
             });
 
+            // 3) Filtrar apenas pela temporada correta
             const seasonMatches = validLinks.filter(item => item.season === targetSeason);
 
             for (const item of seasonMatches) {
@@ -211,18 +251,16 @@ async function getStreams(tmdbId, mediaType, season, episode) {
                 triedSlugs.add(item.rootSlug);
 
                 const streams = await extractVideoStreams(item.rootSlug, targetEpisode, item.isDubbed);
-
                 if (streams.length > 0) {
                     allStreams.push(...streams);
                 }
             }
 
+            // Se ja encontrou streams, nao precisa buscar pelo proximo titulo
             if (allStreams.length > 0) break;
         }
 
-        // 🔥 AQUI resolve spam de fontes
-        return limitStreams(allStreams).sort((a, b) => b.quality - a.quality);
-
+        return allStreams.sort((a, b) => b.quality - a.quality);
     } catch {
         return [];
     }
