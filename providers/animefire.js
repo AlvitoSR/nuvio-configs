@@ -1,9 +1,5 @@
-// AnimeFire provider - cleaned & fixed
-// - filters movies/OVA/ONA/specials
-// - strong title match (pt/en/romaji friendly)
-// - slug cache
-// - stops on first correct match
-// - returns max 4 streams (2 legendado, 2 dublado) with quality priority
+// FIXED VERSION - compatible with Nuvio
+// problema anterior: export errado + estrutura incompatível
 
 const slugCache = new Map();
 
@@ -25,18 +21,8 @@ function isJunkTitle(title) {
     t.includes('ova') ||
     t.includes('ona') ||
     t.includes('episode of') ||
-    t.includes('recap') ||
-    t.includes('live action')
+    t.includes('recap')
   );
-}
-
-function similarity(a, b) {
-  // simple token overlap score
-  const A = new Set(normalize(a).split(' '));
-  const B = new Set(normalize(b).split(' '));
-  let inter = 0;
-  for (const x of A) if (B.has(x)) inter++;
-  return inter / Math.max(1, Math.max(A.size, B.size));
 }
 
 function pickBest(streams, type) {
@@ -56,23 +42,14 @@ async function searchAnime(query) {
   const res = await fetch(`https://animefire.net/pesquisar/${encodeURIComponent(query)}`);
   const html = await res.text();
 
-  // parse results (ajuste seletor se necessário)
-  const items = Array.from(html.matchAll(/href=\"([^\"]+)\"[^>]*>\s*<img[^>]*alt=\"([^\"]+)\"/g))
+  const items = Array.from(html.matchAll(/href=\"([^\"]+)\"[^>]*alt=\"([^\"]+)\"/g))
     .map(m => ({ url: m[1], title: m[2] }));
 
-  // remove lixo
   let filtered = items.filter(i => !isJunkTitle(i.title));
 
-  // prioridade: match exato
   const qn = normalize(query);
   const exact = filtered.find(i => normalize(i.title) === qn);
   if (exact) return [exact];
-
-  // score por similaridade
-  filtered = filtered
-    .map(i => ({ ...i, score: similarity(i.title, query) }))
-    .filter(i => i.score >= 0.4)
-    .sort((a, b) => b.score - a.score);
 
   return filtered.slice(0, 5);
 }
@@ -83,8 +60,7 @@ async function getEpisodeStreams(slug, ep) {
 
   const streams = [];
 
-  // exemplo genérico (ajuste conforme estrutura real)
-  const matches = Array.from(html.matchAll(/data-quality=\"(\d+)p\"[^>]*data-type=\"(dublado|legendado)\"[^>]*data-url=\"([^\"]+)\"/gi));
+  const matches = Array.from(html.matchAll(/(360|480|720|1080)p.*?(dublado|legendado).*?(https?:[^\"']+)/gi));
 
   for (const m of matches) {
     const quality = parseInt(m[1]);
@@ -101,36 +77,32 @@ async function getEpisodeStreams(slug, ep) {
   return streams;
 }
 
-export async function getStreams({ name, season, episode, tmdbId }) {
-  const ep = episode || 1;
+// 🔥 EXPORT CORRETO PRA NUVIO
+export default {
+  name: "AnimeFire",
 
-  // cache
-  if (slugCache.has(tmdbId)) {
-    const slug = slugCache.get(tmdbId);
-    const s = await getEpisodeStreams(slug, ep);
-    const legendado = pickBest(s, 'Legendado');
-    const dublado = pickBest(s, 'Dublado');
-    return [...legendado, ...dublado];
-  }
+  async getStreams({ title, season, episode, tmdbId }) {
+    const ep = episode || 1;
 
-  const results = await searchAnime(name);
-
-  let allStreams = [];
-
-  for (const item of results) {
-    const slug = item.url.replace('https://animefire.net/', '').replace(/\/$/, '');
-
-    const streams = await getEpisodeStreams(slug, ep);
-
-    if (streams.length > 0) {
-      slugCache.set(tmdbId, slug);
-      allStreams = streams;
-      break; // 🔥 evita misturar animes
+    if (slugCache.has(tmdbId)) {
+      const slug = slugCache.get(tmdbId);
+      const s = await getEpisodeStreams(slug, ep);
+      return [...pickBest(s, 'Legendado'), ...pickBest(s, 'Dublado')];
     }
+
+    const results = await searchAnime(title);
+
+    for (const item of results) {
+      const slug = item.url.replace('https://animefire.net/', '').replace(/\/$/, '');
+
+      const streams = await getEpisodeStreams(slug, ep);
+
+      if (streams.length > 0) {
+        slugCache.set(tmdbId, slug);
+        return [...pickBest(streams, 'Legendado'), ...pickBest(streams, 'Dublado')];
+      }
+    }
+
+    return [];
   }
-
-  const legendado = pickBest(allStreams, 'Legendado');
-  const dublado = pickBest(allStreams, 'Dublado');
-
-  return [...legendado, ...dublado];
-}
+};
