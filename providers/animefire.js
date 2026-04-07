@@ -1,23 +1,22 @@
-// ✅ VERSÃO ORIGINAL PRESERVADA + CORREÇÕES (SEM QUEBRAR ESTRUTURA)
+// ✅ VERSÃO FINAL CORRIGIDA (SEM ERRO DE SINTAXE + SEM QUEBRAR LÓGICA)
 
 const TMDB_API_KEY = 'c6c6f4c1cb446e0d5c305f3fa7eeb4a9';
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
 const BASE_URL = 'https://animefire.io';
 
 const SEARCH_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'User-Agent': 'Mozilla/5.0',
+    'Accept': 'text/html',
     'Accept-Language': 'pt-BR,pt;q=0.9',
     'Referer': BASE_URL + '/'
 };
 
 const VIDEO_HEADERS = {
     'X-Requested-With': 'XMLHttpRequest',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'User-Agent': 'Mozilla/5.0',
     'Referer': BASE_URL
 };
 
-// 🔥 NOVO: filtro de lixo (filmes/especiais)
 function isJunkSlug(slug) {
     const s = slug.toLowerCase();
     return (
@@ -32,7 +31,6 @@ function isJunkSlug(slug) {
     );
 }
 
-// ─── Buscar anime ─────────────────────────
 async function searchAnimeFire(title) {
     const slug = titleToSlug(title);
     const url = `${BASE_URL}/pesquisar/${slug}`;
@@ -44,9 +42,11 @@ async function searchAnimeFire(title) {
 
         const items = [];
         const seen = new Set();
-        const regex = /<a(?=[^>]*\bhref="(https?:\/\/animefire\.io\/(?:animes|filmes)\/[^\"]+)")[^>]*>([\s\S]*?)<\/a>/g;
-        let m;
 
+        // ✅ REGEX CORRIGIDO (SEM BUG DE PARSER)
+        const regex = /<a[^>]+href="(https?:\/\/animefire\.io\/(?:animes|filmes)\/[^\"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+
+        let m;
         while ((m = regex.exec(rawHtml)) !== null) {
             const fullUrl = m[1];
             const cardHtml = m[2];
@@ -57,7 +57,7 @@ async function searchAnimeFire(title) {
             const rawSlug = fullUrl.replace(BASE_URL + '/', '').split('/')[1] || '';
 
             if (!rawSlug.toLowerCase().includes('todos-os-episodios')) continue;
-            if (isJunkSlug(rawSlug)) continue; // 🔥 AQUI resolve filmes
+            if (isJunkSlug(rawSlug)) continue;
             if (seen.has(fullUrl)) continue;
             seen.add(fullUrl);
 
@@ -76,23 +76,17 @@ async function searchAnimeFire(title) {
     }
 }
 
-// ─── Detectar temporada (mantido original) ───────────────────────
 function detectSeason(slug) {
     const s = slug.toLowerCase();
 
-    if (s.includes('movie') || s.includes('filme') || s.includes('cinema')) {
-        return 'movie';
-    }
+    if (s.includes('movie') || s.includes('filme') || s.includes('cinema')) return 'movie';
+    if (s.includes('omakes') || s.includes('recap') || s.includes('special')) return 'movie';
 
-    if (s.includes('omakes') || s.includes('recap') || s.includes('special')) {
-        return 'movie';
-    }
-
-    let m = s.match(/[-]season[-](\d+)/);
+    let m = s.match(/-season-(\d+)/);
     if (m) return parseInt(m[1]);
 
-    m = s.match(/(\d+)(?:st|nd|rd|th)[-\s]season|season[-](\d+)/);
-    if (m) return parseInt(m[1] || m[2]);
+    m = s.match(/(\d+)(st|nd|rd|th)-season/);
+    if (m) return parseInt(m[1]);
 
     if (s.includes('part')) return 1;
 
@@ -102,18 +96,12 @@ function detectSeason(slug) {
     m = s.match(/-(\d+)$/);
     if (m) {
         const n = parseInt(m[1]);
-        if (n >= 2 && n <= 20) {
-            const beforeNum = s.replace(/-\d+$/, '');
-            if (!beforeNum.includes('part') && !beforeNum.includes('code') && !beforeNum.includes('white')) {
-                return n;
-            }
-        }
+        if (n >= 2 && n <= 20) return n;
     }
 
     return 1;
 }
 
-// ─── VIDEO (mantido) ────────────────────────────────────
 async function extractVideoStreams(rootSlug, episodeNum, isDubbed) {
     if (!rootSlug || !episodeNum) return [];
 
@@ -160,7 +148,6 @@ async function extractVideoStreams(rootSlug, episodeNum, isDubbed) {
     }
 }
 
-// 🔥 NOVO: limitar streams (4 no máximo)
 function limitStreams(streams) {
     const legendado = streams.filter(s => s.title === 'Legendado').sort((a,b)=>b.quality-a.quality);
     const dublado = streams.filter(s => s.title === 'Dublado').sort((a,b)=>b.quality-a.quality);
@@ -171,7 +158,6 @@ function limitStreams(streams) {
     ];
 }
 
-// ─── HELPERS (mantido) ─────────────────────────────────────────
 function titleToSlug(title) {
     if (!title) return '';
     return title.toLowerCase()
@@ -180,7 +166,18 @@ function titleToSlug(title) {
         .replace(/^-|-$/g, '');
 }
 
-// ─── getStreams (APENAS AJUSTES) ──────────────────────────────
+async function getAniListTitles(tmdbId, mediaType) {
+    const endpoint = mediaType === 'tv' ? 'tv' : 'movie';
+    const tmdbUrl = `${TMDB_BASE_URL}/${endpoint}/${tmdbId}?api_key=${TMDB_API_KEY}&language=en-US`;
+
+    const tmdbResp = await fetch(tmdbUrl);
+    if (!tmdbResp.ok) return [];
+    const tmdbData = await tmdbResp.json();
+    const searchTitle = mediaType === 'tv' ? tmdbData.name : tmdbData.title;
+
+    return [{ name: searchTitle }];
+}
+
 async function getStreams(tmdbId, mediaType, season, episode) {
     const targetSeason = mediaType === 'movie' ? 1 : season;
     const targetEpisode = mediaType === 'movie' ? 1 : episode;
@@ -191,33 +188,18 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
         const allStreams = [];
         const triedSlugs = new Set();
-
-        // 🔥 NOVO: trava de slug principal
         let chosenSlug = null;
 
         for (const titleInfo of titles) {
             const animeLinks = await searchAnimeFire(titleInfo.name);
             if (!animeLinks.length) continue;
 
-            const searchTitleForValidation = titleToSlug(titleInfo.name);
-            const titleWords = searchTitleForValidation.split('-').filter(w => w.length > 2);
-
-            const validLinks = animeLinks.filter(item => {
-                if (titleWords.length === 0) return true;
-                return titleWords.some(word => item.rootSlug.toLowerCase().includes(word));
-            });
-
-            const seasonMatches = validLinks.filter(item => item.season === targetSeason);
+            const seasonMatches = animeLinks.filter(item => item.season === targetSeason);
 
             for (const item of seasonMatches) {
                 if (triedSlugs.has(item.rootSlug)) continue;
 
-                // 🔥 define apenas UM slug
-                if (!chosenSlug) {
-                    chosenSlug = item.rootSlug;
-                }
-
-                // ❌ ignora outros slugs (outras temporadas misturadas)
+                if (!chosenSlug) chosenSlug = item.rootSlug;
                 if (item.rootSlug !== chosenSlug) continue;
 
                 triedSlugs.add(item.rootSlug);
@@ -243,5 +225,4 @@ if (typeof module !== 'undefined' && module.exports) {
     module.exports = { getStreams };
 } else {
     global.getStreams = getStreams;
-}
 }
