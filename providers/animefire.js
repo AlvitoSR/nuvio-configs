@@ -192,6 +192,9 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         const allStreams = [];
         const triedSlugs = new Set();
 
+        // 🔥 NOVO: trava de slug principal
+        let chosenSlug = null;
+
         for (const titleInfo of titles) {
             const animeLinks = await searchAnimeFire(titleInfo.name);
             if (!animeLinks.length) continue;
@@ -208,6 +211,15 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
             for (const item of seasonMatches) {
                 if (triedSlugs.has(item.rootSlug)) continue;
+
+                // 🔥 define apenas UM slug
+                if (!chosenSlug) {
+                    chosenSlug = item.rootSlug;
+                }
+
+                // ❌ ignora outros slugs (outras temporadas misturadas)
+                if (item.rootSlug !== chosenSlug) continue;
+
                 triedSlugs.add(item.rootSlug);
 
                 const streams = await extractVideoStreams(item.rootSlug, targetEpisode, item.isDubbed);
@@ -220,7 +232,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
             if (allStreams.length > 0) break;
         }
 
-        // 🔥 AQUI resolve spam de fontes
         return limitStreams(allStreams).sort((a, b) => b.quality - a.quality);
 
     } catch {
@@ -232,4 +243,5 @@ if (typeof module !== 'undefined' && module.exports) {
     module.exports = { getStreams };
 } else {
     global.getStreams = getStreams;
+}
 }
