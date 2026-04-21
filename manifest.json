@@ -1,15 +1,15 @@
 {
-  "name": "Anime fire",
+  "name": "Anime online CC",
   "version": "1.0.0",
   "scrapers": [
     {
-      "id": "animefire-plugin",
-      "name": "AnimeFire",
-      "description": "Plugin para o site AnimeFire.io",
+      "id": "animeonlinecc-plugin",
+      "name": "Anime Online CC",
+      "description": "Plugin para o site animesonlinecc.to/",
       "version": "1.0.0",
       "author": "Alvitosr",
       "supportedTypes": ["tv"],
-      "filename": "providers/animefire.js",
+      "filename": "providers/animesonlinecc.js",
       "enabled": true,
       "contentLanguage": ["pt-br"],
       "formats": ["mp4", "hls"],
